@@ -29,27 +29,36 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          # 移除 cache 配置，因为此时还没有 Gradle 文件
       
       - name: Setup Android SDK
         run: |
-          # 下载并安装 Android SDK 命令行工具
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O android-tools.zip
           mkdir -p $HOME/android-sdk/cmdline-tools
           unzip -q android-tools.zip -d $HOME/android-sdk/cmdline-tools
           mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
           
-          # 设置环境变量
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
           
-          # 接受许可协议
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          
-          # 安装必要的 Android SDK 包
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+      
+      - name: Create Keystore for Signing
+        run: |
+          # 创建用于签名的 keystore
+          keytool -genkeypair -v \
+            -keystore release.keystore \
+            -alias release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=APK Builder, OU=Dev, O=Builder, L=City, S=State, C=US"
+          
+          echo "✅ Keystore 创建完成"
       
       - name: Create Android Project
         run: |
@@ -58,14 +67,17 @@ jobs:
           echo "应用名: ${{ inputs.app_name }}"
           echo "包名: ${{ inputs.package_name }}"
           
-          # 将包名转换为目录路径
           PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
           
-          # 创建目录结构
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
           
-          # 创建 MainActivity.java
+          # 创建 MainActivity
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'JAVAEOF'
           package ${{ inputs.package_name }};
           
@@ -74,22 +86,50 @@ jobs:
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.webkit.WebSettings;
+          import android.webkit.WebChromeClient;
+          import android.view.KeyEvent;
           
           public class MainActivity extends Activity {
+              private WebView webView;
+              
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  WebView webView = new WebView(this);
+                  webView = new WebView(this);
                   webView.setWebViewClient(new WebViewClient());
+                  webView.setWebChromeClient(new WebChromeClient());
+                  
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
                   settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setSupportZoom(true);
+                  settings.setBuiltInZoomControls(true);
+                  settings.setDisplayZoomControls(false);
+                  
                   webView.loadUrl("${{ inputs.website_url }}");
                   setContentView(webView);
               }
+              
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
+                      webView.goBack();
+                      return true;
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
           }
           JAVAEOF
+          
+          # 创建默认图标 (简单的彩色方块)
+          for size in hdpi mdpi xhdpi xxhdpi xxxhdpi; do
+            convert -size 192x192 xc:#4CAF50 app/src/main/res/mipmap-$size/ic_launcher.png 2>/dev/null || echo "ImageMagick not available, using default icon"
+          done
           
           # 创建 strings.xml
           cat > app/src/main/res/values/strings.xml << 'XMLEOF'
@@ -107,13 +147,17 @@ jobs:
               
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
               
               <application
                   android:label="@string/app_name"
-                  android:usesCleartextTraffic="true">
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:hardwareAccelerated="true">
                   <activity 
                       android:name=".MainActivity"
-                      android:exported="true">
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -123,7 +167,7 @@ jobs:
           </manifest>
           MANIFESTEOF
           
-          # 创建 app/build.gradle
+          # 创建 app/build.gradle (添加签名配置)
           cat > app/build.gradle << 'GRADLEEOF'
           plugins {
               id 'com.android.application'
@@ -141,8 +185,18 @@ jobs:
                   versionName "1.0"
               }
               
+              signingConfigs {
+                  release {
+                      storeFile file('../release.keystore')
+                      storePassword 'android'
+                      keyAlias 'release'
+                      keyPassword 'android'
+                  }
+              }
+              
               buildTypes {
                   release {
+                      signingConfig signingConfigs.release
                       minifyEnabled false
                   }
               }
@@ -191,33 +245,40 @@ jobs:
           android.enableJetifier=true
           PROPSEOF
           
-          # 创建 local.properties
           echo "sdk.dir=$HOME/android-sdk" > local.properties
           
           echo "✅ 项目结构创建完成"
-          ls -la
       
       - name: Create Gradle Wrapper
         run: |
           gradle wrapper --gradle-version 8.2
           chmod +x ./gradlew
       
-      - name: Build APK
+      - name: Build Signed APK
         run: |
-          echo "🔨 开始构建 APK..."
+          echo "🔨 开始构建已签名的 APK..."
           ./gradlew assembleRelease --stacktrace
+          
+          echo "✅ APK 构建完成"
+          ls -lh app/build/outputs/apk/release/
       
-      - name: Upload APK
+      - name: Rename APK
+        run: |
+          cd app/build/outputs/apk/release
+          mv app-release.apk "${{ inputs.app_name }}.apk"
+          echo "✅ APK 已重命名为: ${{ inputs.app_name }}.apk"
+      
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.app_name }}-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: ${{ inputs.app_name }}
+          path: app/build/outputs/apk/release/${{ inputs.app_name }}.apk
           retention-days: 7
       
-      - name: Build Success
+      - name: Build Summary
         run: |
           echo "✅ 构建完成！"
           echo "应用名称: ${{ inputs.app_name }}"
           echo "包名: ${{ inputs.package_name }}"
           echo "网站: ${{ inputs.website_url }}"
-          ls -lh app/build/outputs/apk/release/
+          echo "APK 已签名并可直接安装"
