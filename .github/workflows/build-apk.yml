@@ -84,7 +84,6 @@ jobs:
           if [ -n "${{ inputs.icon_url }}" ]; then
             echo "🎨 下载自定义图标"
             wget -q "${{ inputs.icon_url }}" -O original_icon.png || {
-              echo "⚠️ 图标下载失败，使用默认图标"
               convert -size 192x192 xc:#4CAF50 -fill white -gravity center -pointsize 120 -annotate +0+0 "A" original_icon.png
             }
             
@@ -94,7 +93,6 @@ jobs:
             convert original_icon.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
             convert original_icon.png -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           else
-            echo "📦 使用默认图标"
             convert -size 192x192 xc:#4CAF50 -fill white -gravity center -pointsize 120 -annotate +0+0 "A" temp_icon.png
             
             convert temp_icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
@@ -113,7 +111,7 @@ jobs:
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
           
-          # MainActivity - 纯 Android API 版本
+          # MainActivity - 极简稳定版
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
@@ -123,99 +121,55 @@ jobs:
           import android.net.Uri;
           import android.os.Bundle;
           import android.os.Environment;
+          import android.webkit.CookieManager;
+          import android.webkit.DownloadListener;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
-          import android.webkit.WebSettings;
-          import android.webkit.WebChromeClient;
-          import android.webkit.DownloadListener;
-          import android.webkit.CookieManager;
           import android.view.KeyEvent;
-          import android.view.Window;
-          import android.view.WindowManager;
           import android.view.View;
-          import android.view.ViewGroup;
           import android.widget.ProgressBar;
           import android.widget.RelativeLayout;
-          import android.widget.FrameLayout;
           import android.widget.Toast;
           import android.graphics.Bitmap;
-          import android.graphics.Color;
-          import android.os.Build;
           
           public class MainActivity extends Activity {
               private WebView webView;
               private ProgressBar progressBar;
-              private FrameLayout refreshLayout;
-              private View pullToRefreshView;
-              private float startY;
-              private boolean isPulling = false;
               
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   
-                  setupFullscreen();
-                  
                   // 启用 Cookie 持久化
                   CookieManager cookieManager = CookieManager.getInstance();
                   cookieManager.setAcceptCookie(true);
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                      cookieManager.setAcceptThirdPartyCookies(null, true);
-                  }
                   
-                  // 创建根布局
-                  RelativeLayout rootLayout = new RelativeLayout(this);
+                  RelativeLayout layout = new RelativeLayout(this);
                   
-                  // WebView
                   webView = new WebView(this);
                   RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
                       RelativeLayout.LayoutParams.MATCH_PARENT,
                       RelativeLayout.LayoutParams.MATCH_PARENT
                   );
-                  rootLayout.addView(webView, webParams);
+                  layout.addView(webView, webParams);
                   
-                  // 进度条
                   progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                  progressBar.setId(View.generateViewId());
                   RelativeLayout.LayoutParams progressParams = new RelativeLayout.LayoutParams(
-                      RelativeLayout.LayoutParams.MATCH_PARENT, 8
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      8
                   );
                   progressParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
                   progressBar.setMax(100);
-                  rootLayout.addView(progressBar, progressParams);
+                  layout.addView(progressBar, progressParams);
                   
-                  setContentView(rootLayout);
-                  
+                  setContentView(layout);
                   setupWebView();
                   setupDownload();
-                  setupPullToRefresh();
                   
                   webView.loadUrl("${{ inputs.website_url }}");
-              }
-              
-              private void setupFullscreen() {
-                  requestWindowFeature(Window.FEATURE_NO_TITLE);
-                  getWindow().setFlags(
-                      WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                      WindowManager.LayoutParams.FLAG_FULLSCREEN
-                  );
-                  
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                      getWindow().getDecorView().setSystemUiVisibility(
-                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                          | View.SYSTEM_UI_FLAG_FULLSCREEN
-                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                      );
-                  }
-                  
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                      Window window = getWindow();
-                      window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-                      window.setStatusBarColor(Color.BLACK);
-                      window.setNavigationBarColor(Color.BLACK);
-                  }
               }
               
               private void setupWebView() {
@@ -230,8 +184,6 @@ jobs:
                   settings.setSupportZoom(true);
                   settings.setBuiltInZoomControls(true);
                   settings.setDisplayZoomControls(false);
-                  settings.setAllowFileAccess(true);
-                  settings.setMediaPlaybackRequiresUserGesture(false);
                   settings.setAppCacheEnabled(true);
                   settings.setAppCachePath(getCacheDir().getAbsolutePath());
                   
@@ -246,48 +198,6 @@ jobs:
                       public void onPageFinished(WebView view, String url) {
                           super.onPageFinished(view, url);
                           progressBar.setVisibility(View.GONE);
-                          
-                          // 读取 theme-color
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                              view.evaluateJavascript(
-                                  "(function() { var meta = document.querySelector('meta[name=\"theme-color\"]'); return meta ? meta.content : null; })();",
-                                  value -> {
-                                      if (value != null && !value.equals("null") && !value.equals("\"null\"")) {
-                                          try {
-                                              String color = value.replace("\"", "");
-                                              int colorInt = Color.parseColor(color);
-                                              getWindow().setStatusBarColor(colorInt);
-                                              getWindow().setNavigationBarColor(colorInt);
-                                              
-                                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                                  if (isColorDark(colorInt)) {
-                                                      getWindow().getDecorView().setSystemUiVisibility(
-                                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                                                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                                                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                                                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                                                          | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                                                      );
-                                                  } else {
-                                                      getWindow().getDecorView().setSystemUiVisibility(
-                                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                                                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                                                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                                                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                                                          | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                                                          | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-                                                      );
-                                                  }
-                                              }
-                                          } catch (Exception e) {
-                                              e.printStackTrace();
-                                          }
-                                      }
-                                  }
-                              );
-                          }
                       }
                   });
                   
@@ -297,55 +207,34 @@ jobs:
                           super.onProgressChanged(view, newProgress);
                           progressBar.setProgress(newProgress);
                           if (newProgress == 100) {
-                              progressBar.postDelayed(() -> {
-                                  progressBar.setVisibility(View.GONE);
+                              progressBar.postDelayed(new Runnable() {
+                                  @Override
+                                  public void run() {
+                                      progressBar.setVisibility(View.GONE);
+                                  }
                               }, 300);
                           }
                       }
                   });
               }
               
-              private void setupPullToRefresh() {
-                  webView.setOnTouchListener((v, event) -> {
-                      switch (event.getAction()) {
-                          case android.view.MotionEvent.ACTION_DOWN:
-                              startY = event.getY();
-                              break;
-                          case android.view.MotionEvent.ACTION_MOVE:
-                              if (webView.getScrollY() == 0) {
-                                  float currentY = event.getY();
-                                  float diff = currentY - startY;
-                                  if (diff > 100 && !isPulling) {
-                                      isPulling = true;
-                                      webView.reload();
-                                      Toast.makeText(MainActivity.this, "刷新中...", Toast.LENGTH_SHORT).show();
-                                  }
-                              }
-                              break;
-                          case android.view.MotionEvent.ACTION_UP:
-                              isPulling = false;
-                              break;
-                      }
-                      return false;
-                  });
-              }
-              
               private void setupDownload() {
                   webView.setDownloadListener(new DownloadListener() {
                       @Override
-                      public void onDownloadStart(String url, String userAgent, String contentDisposition, 
-                                                   String mimeType, long contentLength) {
+                      public void onDownloadStart(String url, String userAgent, 
+                                                   String contentDisposition, String mimeType, 
+                                                   long contentLength) {
                           try {
                               DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
                               request.setMimeType(mimeType);
                               
-                              String filename = contentDisposition;
-                              if (filename == null || filename.isEmpty()) {
-                                  filename = url.substring(url.lastIndexOf("/") + 1);
+                              String filename = url.substring(url.lastIndexOf("/") + 1);
+                              if (filename.isEmpty()) {
+                                  filename = "download";
                               }
                               
                               request.setTitle(filename);
-                              request.setDescription("正在下载文件...");
+                              request.setDescription("正在下载...");
                               request.allowScanningByMediaScanner();
                               request.setNotificationVisibility(
                                   DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
@@ -357,18 +246,14 @@ jobs:
                               DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
                               if (dm != null) {
                                   dm.enqueue(request);
-                                  Toast.makeText(MainActivity.this, "开始下载：" + filename, Toast.LENGTH_SHORT).show();
+                                  Toast.makeText(MainActivity.this, 
+                                      "开始下载：" + filename, Toast.LENGTH_SHORT).show();
                               }
                           } catch (Exception e) {
                               Toast.makeText(MainActivity.this, "下载失败", Toast.LENGTH_SHORT).show();
                           }
                       }
                   });
-              }
-              
-              private boolean isColorDark(int color) {
-                  double darkness = 1 - (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)) / 255;
-                  return darkness >= 0.5;
               }
               
               @Override
@@ -384,9 +269,7 @@ jobs:
               protected void onPause() {
                   super.onPause();
                   webView.onPause();
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                      CookieManager.getInstance().flush();
-                  }
+                  CookieManager.getInstance().flush();
               }
               
               @Override
@@ -397,7 +280,6 @@ jobs:
           }
           EOF
           
-          # strings.xml
           cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -405,7 +287,6 @@ jobs:
           </resources>
           EOF
           
-          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -417,8 +298,6 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" 
                                android:maxSdkVersion="28" />
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" 
-                               android:maxSdkVersion="32" />
               
               <application
                   android:label="@string/app_name"
@@ -429,8 +308,7 @@ jobs:
                   android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
                   <activity 
                       android:name=".MainActivity"
-                      android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -440,7 +318,6 @@ jobs:
           </manifest>
           EOF
           
-          # app/build.gradle - 不使用 AndroidX
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -507,8 +384,7 @@ jobs:
           
           cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-          android.useAndroidX=false
-          android.enableJetifier=false
+          android.useAndroidX=true
           EOF
           
           echo "sdk.dir=$HOME/android-sdk" > local.properties
@@ -539,4 +415,4 @@ jobs:
       - name: Build Summary
         run: |
           echo "✅ 构建完成！"
-          echo "功能: 下拉刷新 + 文件下载 + 全屏模式 + Cookie持久化 + 状态栏自适应"
+          echo "功能: 进度条 + 文件下载 + Cookie持久化 + 返回键导航"
