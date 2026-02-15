@@ -15,6 +15,20 @@ on:
         description: '包名'
         required: true
         type: string
+      icon_base64:
+        description: '图标Base64'
+        required: false
+        type: string
+      version_name:
+        description: '版本名称'
+        required: false
+        type: string
+        default: '1.0.0'
+      version_code:
+        description: '版本号'
+        required: false
+        type: string
+        default: '1'
 
 jobs:
   build:
@@ -43,6 +57,10 @@ jobs:
           
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          
+          # 安装 ImageMagick 用于图标处理
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
       
       - name: Create Keystore
         run: |
@@ -56,17 +74,49 @@ jobs:
             -keypass android \
             -dname "CN=Builder, OU=Dev, O=APK, L=City, S=State, C=US"
       
+      - name: Process Icon
+        run: |
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          
+          if [ -n "${{ inputs.icon_base64 }}" ]; then
+            echo "🎨 处理自定义图标..."
+            echo "${{ inputs.icon_base64 }}" | base64 -d > original_icon.png
+            
+            # 生成不同尺寸的图标
+            convert original_icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+            convert original_icon.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+            convert original_icon.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+            convert original_icon.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+            convert original_icon.png -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+            
+            echo "✅ 图标处理完成"
+          else
+            echo "📦 使用默认图标..."
+            convert -size 192x192 xc:#4CAF50 -fill white -gravity center -pointsize 120 -annotate +0+0 "A" temp_icon.png
+            
+            convert temp_icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+            convert temp_icon.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+            convert temp_icon.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+            convert temp_icon.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+            convert temp_icon.png -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          fi
+      
       - name: Create Android Project
         run: |
           echo "🚀 创建项目..."
+          echo "版本名称: ${{ inputs.version_name }}"
+          echo "版本号: ${{ inputs.version_code }}"
           
           PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
           
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/layout
           
-          # MainActivity with Progress
+          # MainActivity
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
@@ -99,7 +149,6 @@ jobs:
                   layout.addView(webView, webParams);
                   
                   progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-                  progressBar.setId(android.view.View.generateViewId());
                   RelativeLayout.LayoutParams progressParams = new RelativeLayout.LayoutParams(
                       RelativeLayout.LayoutParams.MATCH_PARENT,
                       8
@@ -180,13 +229,16 @@ jobs:
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="${{ inputs.package_name }}">
+              package="${{ inputs.package_name }}"
+              android:versionCode="${{ inputs.version_code }}"
+              android:versionName="${{ inputs.version_name }}">
               
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               
               <application
                   android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
                   android:usesCleartextTraffic="true"
                   android:hardwareAccelerated="true"
                   android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
@@ -216,8 +268,8 @@ jobs:
                   applicationId "${{ inputs.package_name }}"
                   minSdk 21
                   targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
+                  versionCode ${{ inputs.version_code }}
+                  versionName "${{ inputs.version_name }}"
               }
               
               signingConfigs {
@@ -243,7 +295,6 @@ jobs:
           }
           EOF
           
-          # build.gradle
           cat > build.gradle << 'EOF'
           buildscript {
               repositories {
@@ -263,13 +314,11 @@ jobs:
           }
           EOF
           
-          # settings.gradle
           cat > settings.gradle << 'EOF'
           rootProject.name = "WebViewAPK"
           include ':app'
           EOF
           
-          # gradle.properties
           cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -285,17 +334,24 @@ jobs:
       - name: Build APK
         run: |
           echo "🔨 构建 APK..."
-          ./gradlew assembleRelease --stacktrace --info
+          ./gradlew assembleRelease --stacktrace
       
       - name: Rename APK
         run: |
           cd app/build/outputs/apk/release
-          mv app-release.apk "${{ inputs.app_name }}.apk"
+          mv app-release.apk "${{ inputs.app_name }}-v${{ inputs.version_name }}.apk"
           ls -lh
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.app_name }}
-          path: app/build/outputs/apk/release/${{ inputs.app_name }}.apk
+          name: ${{ inputs.app_name }}-v${{ inputs.version_name }}
+          path: app/build/outputs/apk/release/${{ inputs.app_name }}-v${{ inputs.version_name }}.apk
           retention-days: 7
+      
+      - name: Build Summary
+        run: |
+          echo "✅ 构建完成！"
+          echo "应用名称: ${{ inputs.app_name }}"
+          echo "版本: ${{ inputs.version_name }} (${{ inputs.version_code }})"
+          echo "包名: ${{ inputs.package_name }}"
