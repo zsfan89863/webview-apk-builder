@@ -45,9 +45,8 @@ jobs:
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
       
-      - name: Create Keystore for Signing
+      - name: Create Keystore
         run: |
-          # 创建用于签名的 keystore
           keytool -genkeypair -v \
             -keystore release.keystore \
             -alias release \
@@ -57,27 +56,24 @@ jobs:
             -storepass android \
             -keypass android \
             -dname "CN=APK Builder, OU=Dev, O=Builder, L=City, S=State, C=US"
-          
-          echo "✅ Keystore 创建完成"
       
       - name: Create Android Project
         run: |
           echo "🚀 创建 Android 项目..."
-          echo "网站: ${{ inputs.website_url }}"
-          echo "应用名: ${{ inputs.app_name }}"
-          echo "包名: ${{ inputs.package_name }}"
           
           PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
           
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/mipmap-hdpi
           mkdir -p app/src/main/res/mipmap-mdpi
           mkdir -p app/src/main/res/mipmap-xhdpi
           mkdir -p app/src/main/res/mipmap-xxhdpi
           mkdir -p app/src/main/res/mipmap-xxxhdpi
           
-          # 创建 MainActivity
+          # 创建 MainActivity（带进度条）
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'JAVAEOF'
           package ${{ inputs.package_name }};
           
@@ -88,17 +84,34 @@ jobs:
           import android.webkit.WebSettings;
           import android.webkit.WebChromeClient;
           import android.view.KeyEvent;
+          import android.view.View;
+          import android.widget.ProgressBar;
+          import android.widget.TextView;
+          import android.graphics.Bitmap;
+          import android.net.http.SslError;
+          import android.webkit.SslErrorHandler;
           
           public class MainActivity extends Activity {
               private WebView webView;
+              private ProgressBar progressBar;
+              private TextView loadingText;
+              private View splashScreen;
               
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  webView = new WebView(this);
-                  webView.setWebViewClient(new WebViewClient());
-                  webView.setWebChromeClient(new WebChromeClient());
+                  setContentView(R.layout.activity_main);
                   
+                  webView = findViewById(R.id.webview);
+                  progressBar = findViewById(R.id.progress_bar);
+                  loadingText = findViewById(R.id.loading_text);
+                  splashScreen = findViewById(R.id.splash_screen);
+                  
+                  setupWebView();
+                  webView.loadUrl("${{ inputs.website_url }}");
+              }
+              
+              private void setupWebView() {
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
@@ -110,9 +123,62 @@ jobs:
                   settings.setSupportZoom(true);
                   settings.setBuiltInZoomControls(true);
                   settings.setDisplayZoomControls(false);
+                  settings.setAllowFileAccess(true);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
                   
-                  webView.loadUrl("${{ inputs.website_url }}");
-                  setContentView(webView);
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          super.onPageStarted(view, url, favicon);
+                          progressBar.setVisibility(View.VISIBLE);
+                          loadingText.setVisibility(View.VISIBLE);
+                      }
+                      
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          super.onPageFinished(view, url);
+                          progressBar.setVisibility(View.GONE);
+                          loadingText.setVisibility(View.GONE);
+                          
+                          if (splashScreen.getVisibility() == View.VISIBLE) {
+                              splashScreen.postDelayed(new Runnable() {
+                                  @Override
+                                  public void run() {
+                                      splashScreen.setVisibility(View.GONE);
+                                  }
+                              }, 300);
+                          }
+                      }
+                      
+                      @Override
+                      public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                          handler.proceed();
+                      }
+                  });
+                  
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onProgressChanged(WebView view, int newProgress) {
+                          super.onProgressChanged(view, newProgress);
+                          progressBar.setProgress(newProgress);
+                          loadingText.setText("加载中 " + newProgress + "%");
+                          
+                          if (newProgress == 100) {
+                              progressBar.postDelayed(new Runnable() {
+                                  @Override
+                                  public void run() {
+                                      progressBar.setVisibility(View.GONE);
+                                      loadingText.setVisibility(View.GONE);
+                                  }
+                              }, 200);
+                          }
+                      }
+                      
+                      @Override
+                      public void onReceivedTitle(WebView view, String title) {
+                          super.onReceivedTitle(view, title);
+                      }
+                  });
               }
               
               @Override
@@ -126,9 +192,102 @@ jobs:
           }
           JAVAEOF
           
-          # 创建默认图标 (简单的彩色方块)
+          # 创建布局文件
+          cat > app/src/main/res/layout/activity_main.xml << 'LAYOUTEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              
+              <!-- WebView -->
+              <WebView
+                  android:id="@+id/webview"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+              
+              <!-- 进度条容器 -->
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:layout_alignParentTop="true"
+                  android:background="#FFFFFF"
+                  android:elevation="4dp">
+                  
+                  <!-- 进度条 -->
+                  <ProgressBar
+                      android:id="@+id/progress_bar"
+                      style="?android:attr/progressBarStyleHorizontal"
+                      android:layout_width="match_parent"
+                      android:layout_height="3dp"
+                      android:progressTint="#000000"
+                      android:progressBackgroundTint="#E0E0E0"
+                      android:visibility="gone"
+                      android:max="100" />
+                  
+                  <!-- 加载文字 -->
+                  <TextView
+                      android:id="@+id/loading_text"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="加载中 0%"
+                      android:textSize="12sp"
+                      android:textColor="#666666"
+                      android:gravity="center"
+                      android:padding="4dp"
+                      android:visibility="gone" />
+              </LinearLayout>
+              
+              <!-- 启动闪屏 -->
+              <FrameLayout
+                  android:id="@+id/splash_screen"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:background="#FFFFFF"
+                  android:clickable="true">
+                  
+                  <LinearLayout
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_gravity="center"
+                      android:orientation="vertical"
+                      android:gravity="center">
+                      
+                      <ImageView
+                          android:layout_width="80dp"
+                          android:layout_height="80dp"
+                          android:src="@mipmap/ic_launcher"
+                          android:layout_marginBottom="16dp" />
+                      
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="${{ inputs.app_name }}"
+                          android:textSize="24sp"
+                          android:textColor="#000000"
+                          android:textStyle="bold" />
+                      
+                      <ProgressBar
+                          android:layout_width="32dp"
+                          android:layout_height="32dp"
+                          android:layout_marginTop="24dp"
+                          android:indeterminateTint="#000000" />
+                      
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="正在加载..."
+                          android:textSize="14sp"
+                          android:textColor="#666666"
+                          android:layout_marginTop="12dp" />
+                  </LinearLayout>
+              </FrameLayout>
+          </RelativeLayout>
+          LAYOUTEOF
+          
+          # 创建图标
           for size in hdpi mdpi xhdpi xxhdpi xxxhdpi; do
-            convert -size 192x192 xc:#4CAF50 app/src/main/res/mipmap-$size/ic_launcher.png 2>/dev/null || echo "ImageMagick not available, using default icon"
+            convert -size 192x192 xc:#4CAF50 app/src/main/res/mipmap-$size/ic_launcher.png 2>/dev/null || echo "Skip icon"
           done
           
           # 创建 strings.xml
@@ -138,6 +297,16 @@ jobs:
               <string name="app_name">${{ inputs.app_name }}</string>
           </resources>
           XMLEOF
+          
+          # 创建 colors.xml
+          cat > app/src/main/res/values/colors.xml << 'COLORSEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="colorPrimary">#000000</color>
+              <color name="colorPrimaryDark">#000000</color>
+              <color name="colorAccent">#000000</color>
+          </resources>
+          COLORSEOF
           
           # 创建 AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'MANIFESTEOF'
@@ -153,11 +322,13 @@ jobs:
                   android:label="@string/app_name"
                   android:icon="@mipmap/ic_launcher"
                   android:usesCleartextTraffic="true"
-                  android:hardwareAccelerated="true">
+                  android:hardwareAccelerated="true"
+                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
                   <activity 
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:configChanges="orientation|screenSize">
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:windowSoftInputMode="adjustResize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -167,7 +338,7 @@ jobs:
           </manifest>
           MANIFESTEOF
           
-          # 创建 app/build.gradle (添加签名配置)
+          # 创建 app/build.gradle
           cat > app/build.gradle << 'GRADLEEOF'
           plugins {
               id 'com.android.application'
@@ -198,6 +369,7 @@ jobs:
                   release {
                       signingConfig signingConfigs.release
                       minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
               
@@ -232,13 +404,11 @@ jobs:
           }
           ROOTGRADLEEOF
           
-          # 创建 settings.gradle
           cat > settings.gradle << 'SETTINGSEOF'
           rootProject.name = "WebViewAPK"
           include ':app'
           SETTINGSEOF
           
-          # 创建 gradle.properties
           cat > gradle.properties << 'PROPSEOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -246,8 +416,6 @@ jobs:
           PROPSEOF
           
           echo "sdk.dir=$HOME/android-sdk" > local.properties
-          
-          echo "✅ 项目结构创建完成"
       
       - name: Create Gradle Wrapper
         run: |
@@ -256,19 +424,16 @@ jobs:
       
       - name: Build Signed APK
         run: |
-          echo "🔨 开始构建已签名的 APK..."
+          echo "🔨 构建已签名的 APK..."
           ./gradlew assembleRelease --stacktrace
-          
-          echo "✅ APK 构建完成"
           ls -lh app/build/outputs/apk/release/
       
       - name: Rename APK
         run: |
           cd app/build/outputs/apk/release
           mv app-release.apk "${{ inputs.app_name }}.apk"
-          echo "✅ APK 已重命名为: ${{ inputs.app_name }}.apk"
       
-      - name: Upload Signed APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.app_name }}
@@ -281,4 +446,3 @@ jobs:
           echo "应用名称: ${{ inputs.app_name }}"
           echo "包名: ${{ inputs.package_name }}"
           echo "网站: ${{ inputs.website_url }}"
-          echo "APK 已签名并可直接安装"
