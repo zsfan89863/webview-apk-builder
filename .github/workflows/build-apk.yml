@@ -112,9 +112,8 @@ jobs:
           
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/xml
           
-          # MainActivity - 完整增强版
+          # MainActivity - 纯 Android API 版本
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
@@ -134,26 +133,27 @@ jobs:
           import android.view.Window;
           import android.view.WindowManager;
           import android.view.View;
+          import android.view.ViewGroup;
           import android.widget.ProgressBar;
+          import android.widget.RelativeLayout;
+          import android.widget.FrameLayout;
           import android.widget.Toast;
           import android.graphics.Bitmap;
           import android.graphics.Color;
           import android.os.Build;
-          import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
-          import androidx.core.view.WindowCompat;
-          import androidx.core.view.WindowInsetsControllerCompat;
-          import androidx.core.view.WindowInsetsCompat;
           
           public class MainActivity extends Activity {
               private WebView webView;
               private ProgressBar progressBar;
-              private SwipeRefreshLayout swipeRefreshLayout;
+              private FrameLayout refreshLayout;
+              private View pullToRefreshView;
+              private float startY;
+              private boolean isPulling = false;
               
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   
-                  // 沉浸式全屏模式
                   setupFullscreen();
                   
                   // 启用 Cookie 持久化
@@ -163,65 +163,51 @@ jobs:
                       cookieManager.setAcceptThirdPartyCookies(null, true);
                   }
                   
-                  // 创建布局
-                  swipeRefreshLayout = new SwipeRefreshLayout(this);
-                  swipeRefreshLayout.setColorSchemeColors(Color.BLACK, Color.DKGRAY);
+                  // 创建根布局
+                  RelativeLayout rootLayout = new RelativeLayout(this);
                   
-                  android.widget.RelativeLayout layout = new android.widget.RelativeLayout(this);
-                  
+                  // WebView
                   webView = new WebView(this);
-                  android.widget.RelativeLayout.LayoutParams webParams = 
-                      new android.widget.RelativeLayout.LayoutParams(
-                          android.widget.RelativeLayout.LayoutParams.MATCH_PARENT,
-                          android.widget.RelativeLayout.LayoutParams.MATCH_PARENT
-                      );
-                  layout.addView(webView, webParams);
+                  RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.MATCH_PARENT
+                  );
+                  rootLayout.addView(webView, webParams);
                   
+                  // 进度条
                   progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-                  android.widget.RelativeLayout.LayoutParams progressParams = 
-                      new android.widget.RelativeLayout.LayoutParams(
-                          android.widget.RelativeLayout.LayoutParams.MATCH_PARENT,
-                          8
-                      );
-                  progressParams.addRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
+                  RelativeLayout.LayoutParams progressParams = new RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT, 8
+                  );
+                  progressParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
                   progressBar.setMax(100);
-                  layout.addView(progressBar, progressParams);
+                  rootLayout.addView(progressBar, progressParams);
                   
-                  swipeRefreshLayout.addView(layout);
-                  setContentView(swipeRefreshLayout);
+                  setContentView(rootLayout);
                   
                   setupWebView();
-                  setupSwipeRefresh();
                   setupDownload();
+                  setupPullToRefresh();
                   
                   webView.loadUrl("${{ inputs.website_url }}");
               }
               
               private void setupFullscreen() {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                      WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-                      WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(
-                          getWindow(), getWindow().getDecorView()
+                  requestWindowFeature(Window.FEATURE_NO_TITLE);
+                  getWindow().setFlags(
+                      WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                      WindowManager.LayoutParams.FLAG_FULLSCREEN
+                  );
+                  
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                       );
-                      controller.hide(WindowInsetsCompat.Type.systemBars());
-                      controller.setSystemBarsBehavior(
-                          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                      );
-                  } else {
-                      getWindow().setFlags(
-                          WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                          WindowManager.LayoutParams.FLAG_FULLSCREEN
-                      );
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                          getWindow().getDecorView().setSystemUiVisibility(
-                              View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                              | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                              | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                              | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                              | View.SYSTEM_UI_FLAG_FULLSCREEN
-                              | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                          );
-                      }
                   }
                   
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -260,15 +246,11 @@ jobs:
                       public void onPageFinished(WebView view, String url) {
                           super.onPageFinished(view, url);
                           progressBar.setVisibility(View.GONE);
-                          swipeRefreshLayout.setRefreshing(false);
                           
-                          // 读取 theme-color 并设置状态栏颜色
+                          // 读取 theme-color
                           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                               view.evaluateJavascript(
-                                  "(function() { " +
-                                  "  var meta = document.querySelector('meta[name=\"theme-color\"]'); " +
-                                  "  return meta ? meta.content : null; " +
-                                  "})();",
+                                  "(function() { var meta = document.querySelector('meta[name=\"theme-color\"]'); return meta ? meta.content : null; })();",
                                   value -> {
                                       if (value != null && !value.equals("null") && !value.equals("\"null\"")) {
                                           try {
@@ -279,10 +261,23 @@ jobs:
                                               
                                               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                                                   if (isColorDark(colorInt)) {
-                                                      getWindow().getDecorView().setSystemUiVisibility(0);
+                                                      getWindow().getDecorView().setSystemUiVisibility(
+                                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                                      );
                                                   } else {
                                                       getWindow().getDecorView().setSystemUiVisibility(
-                                                          View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                                          | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                                                       );
                                                   }
                                               }
@@ -310,9 +305,28 @@ jobs:
                   });
               }
               
-              private void setupSwipeRefresh() {
-                  swipeRefreshLayout.setOnRefreshListener(() -> {
-                      webView.reload();
+              private void setupPullToRefresh() {
+                  webView.setOnTouchListener((v, event) -> {
+                      switch (event.getAction()) {
+                          case android.view.MotionEvent.ACTION_DOWN:
+                              startY = event.getY();
+                              break;
+                          case android.view.MotionEvent.ACTION_MOVE:
+                              if (webView.getScrollY() == 0) {
+                                  float currentY = event.getY();
+                                  float diff = currentY - startY;
+                                  if (diff > 100 && !isPulling) {
+                                      isPulling = true;
+                                      webView.reload();
+                                      Toast.makeText(MainActivity.this, "刷新中...", Toast.LENGTH_SHORT).show();
+                                  }
+                              }
+                              break;
+                          case android.view.MotionEvent.ACTION_UP:
+                              isPulling = false;
+                              break;
+                      }
+                      return false;
                   });
               }
               
@@ -343,21 +357,17 @@ jobs:
                               DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
                               if (dm != null) {
                                   dm.enqueue(request);
-                                  Toast.makeText(MainActivity.this, 
-                                      "开始下载：" + filename, Toast.LENGTH_SHORT).show();
+                                  Toast.makeText(MainActivity.this, "开始下载：" + filename, Toast.LENGTH_SHORT).show();
                               }
                           } catch (Exception e) {
-                              Toast.makeText(MainActivity.this, 
-                                  "下载失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+                              Toast.makeText(MainActivity.this, "下载失败", Toast.LENGTH_SHORT).show();
                           }
                       }
                   });
               }
               
               private boolean isColorDark(int color) {
-                  double darkness = 1 - (0.299 * Color.red(color) + 
-                                        0.587 * Color.green(color) + 
-                                        0.114 * Color.blue(color)) / 255;
+                  double darkness = 1 - (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)) / 255;
                   return darkness >= 0.5;
               }
               
@@ -374,7 +384,6 @@ jobs:
               protected void onPause() {
                   super.onPause();
                   webView.onPause();
-                  // 保存 Cookie
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                       CookieManager.getInstance().flush();
                   }
@@ -396,7 +405,7 @@ jobs:
           </resources>
           EOF
           
-          # AndroidManifest.xml - 添加下载权限
+          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -431,7 +440,7 @@ jobs:
           </manifest>
           EOF
           
-          # app/build.gradle - 添加 SwipeRefreshLayout 依赖
+          # app/build.gradle - 不使用 AndroidX
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -470,14 +479,8 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
-          
-          dependencies {
-              implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
-              implementation 'androidx.core:core:1.12.0'
-          }
           EOF
           
-          # build.gradle
           cat > build.gradle << 'EOF'
           buildscript {
               repositories {
@@ -504,8 +507,8 @@ jobs:
           
           cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          android.enableJetifier=true
+          android.useAndroidX=false
+          android.enableJetifier=false
           EOF
           
           echo "sdk.dir=$HOME/android-sdk" > local.properties
@@ -536,6 +539,4 @@ jobs:
       - name: Build Summary
         run: |
           echo "✅ 构建完成！"
-          echo "应用名称: ${{ inputs.app_name }}"
-          echo "版本: ${{ inputs.version_name }} (${{ inputs.version_code }})"
           echo "功能: 下拉刷新 + 文件下载 + 全屏模式 + Cookie持久化 + 状态栏自适应"
