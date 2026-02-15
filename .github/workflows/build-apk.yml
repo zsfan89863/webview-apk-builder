@@ -1,0 +1,154 @@
+name: Build WebView APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      website_url:
+        description: '网站URL'
+        required: true
+      app_name:
+        description: '应用名称'
+        required: true
+      package_name:
+        description: '包名'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set Up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+      
+      - name: Create Android Project
+        run: |
+          # 创建基础 Android 项目结构
+          mkdir -p app/src/main/java/com/webviewapk
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/layout
+          
+          # 创建 MainActivity.java
+          cat > app/src/main/java/com/webviewapk/MainActivity.java << 'EOF'
+          package com.webviewapk;
+          
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  WebView webView = new WebView(this);
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.getSettings().setJavaScriptEnabled(true);
+                  webView.loadUrl("${{ github.event.inputs.website_url }}");
+                  setContentView(webView);
+              }
+          }
+          EOF
+          
+          # 创建 strings.xml
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">${{ github.event.inputs.app_name }}</string>
+          </resources>
+          EOF
+          
+          # 创建 AndroidManifest.xml
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${{ github.event.inputs.package_name }}">
+              
+              <uses-permission android:name="android.permission.INTERNET" />
+              
+              <application
+                  android:label="@string/app_name">
+                  <activity android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          
+          # 创建 build.gradle (app)
+          cat > app/build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+          
+          android {
+              compileSdk 34
+              
+              defaultConfig {
+                  applicationId "${{ github.event.inputs.package_name }}"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+          }
+          EOF
+          
+          # 创建 build.gradle (root)
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.1.0' apply false
+          }
+          EOF
+          
+          # 创建 settings.gradle
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          
+          rootProject.name = "WebViewAPK"
+          include ':app'
+          EOF
+      
+      - name: Grant execute permission for gradlew
+        run: |
+          # 创建 gradlew wrapper
+          gradle wrapper
+          chmod +x ./gradlew
+      
+      - name: Build APK
+        run: ./gradlew assembleRelease
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-release
+          path: app/build/outputs/apk/release/*.apk
