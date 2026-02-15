@@ -15,8 +15,8 @@ on:
         description: '包名'
         required: true
         type: string
-      icon_base64:
-        description: '图标Base64'
+      icon_url:
+        description: '图标URL'
         required: false
         type: string
       version_name:
@@ -58,7 +58,6 @@ jobs:
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           
-          # 安装 ImageMagick 用于图标处理
           sudo apt-get update
           sudo apt-get install -y imagemagick
       
@@ -82,11 +81,13 @@ jobs:
           mkdir -p app/src/main/res/mipmap-xxhdpi
           mkdir -p app/src/main/res/mipmap-xxxhdpi
           
-          if [ -n "${{ inputs.icon_base64 }}" ]; then
-            echo "🎨 处理自定义图标..."
-            echo "${{ inputs.icon_base64 }}" | base64 -d > original_icon.png
+          if [ -n "${{ inputs.icon_url }}" ]; then
+            echo "🎨 下载自定义图标: ${{ inputs.icon_url }}"
+            wget -q "${{ inputs.icon_url }}" -O original_icon.png || {
+              echo "⚠️ 图标下载失败，使用默认图标"
+              convert -size 192x192 xc:#4CAF50 -fill white -gravity center -pointsize 120 -annotate +0+0 "A" original_icon.png
+            }
             
-            # 生成不同尺寸的图标
             convert original_icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
             convert original_icon.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
             convert original_icon.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
@@ -95,7 +96,7 @@ jobs:
             
             echo "✅ 图标处理完成"
           else
-            echo "📦 使用默认图标..."
+            echo "📦 使用默认绿色图标"
             convert -size 192x192 xc:#4CAF50 -fill white -gravity center -pointsize 120 -annotate +0+0 "A" temp_icon.png
             
             convert temp_icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
@@ -108,15 +109,16 @@ jobs:
       - name: Create Android Project
         run: |
           echo "🚀 创建项目..."
-          echo "版本名称: ${{ inputs.version_name }}"
-          echo "版本号: ${{ inputs.version_code }}"
+          echo "网站: ${{ inputs.website_url }}"
+          echo "应用名: ${{ inputs.app_name }}"
+          echo "包名: ${{ inputs.package_name }}"
+          echo "版本: ${{ inputs.version_name }} (${{ inputs.version_code }})"
           
           PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
           
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
           
-          # MainActivity
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
@@ -217,7 +219,6 @@ jobs:
           }
           EOF
           
-          # strings.xml
           cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -225,7 +226,6 @@ jobs:
           </resources>
           EOF
           
-          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -254,7 +254,6 @@ jobs:
           </manifest>
           EOF
           
-          # app/build.gradle
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -355,3 +354,4 @@ jobs:
           echo "应用名称: ${{ inputs.app_name }}"
           echo "版本: ${{ inputs.version_name }} (${{ inputs.version_code }})"
           echo "包名: ${{ inputs.package_name }}"
+          echo "网站: ${{ inputs.website_url }}"
