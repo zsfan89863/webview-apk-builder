@@ -40,7 +40,6 @@ jobs:
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
           
           yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
@@ -55,26 +54,20 @@ jobs:
             -validity 10000 \
             -storepass android \
             -keypass android \
-            -dname "CN=APK Builder, OU=Dev, O=Builder, L=City, S=State, C=US"
+            -dname "CN=Builder, OU=Dev, O=APK, L=City, S=State, C=US"
       
       - name: Create Android Project
         run: |
-          echo "🚀 创建 Android 项目..."
+          echo "🚀 创建项目..."
           
           PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
           
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/res/layout
-          mkdir -p app/src/main/res/drawable
-          mkdir -p app/src/main/res/mipmap-hdpi
-          mkdir -p app/src/main/res/mipmap-mdpi
-          mkdir -p app/src/main/res/mipmap-xhdpi
-          mkdir -p app/src/main/res/mipmap-xxhdpi
-          mkdir -p app/src/main/res/mipmap-xxxhdpi
           
-          # 创建 MainActivity（带进度条）
-          cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'JAVAEOF'
+          # MainActivity with Progress
+          cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
           import android.app.Activity;
@@ -84,29 +77,38 @@ jobs:
           import android.webkit.WebSettings;
           import android.webkit.WebChromeClient;
           import android.view.KeyEvent;
-          import android.view.View;
           import android.widget.ProgressBar;
-          import android.widget.TextView;
+          import android.widget.RelativeLayout;
           import android.graphics.Bitmap;
-          import android.net.http.SslError;
-          import android.webkit.SslErrorHandler;
           
           public class MainActivity extends Activity {
               private WebView webView;
               private ProgressBar progressBar;
-              private TextView loadingText;
-              private View splashScreen;
               
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  setContentView(R.layout.activity_main);
                   
-                  webView = findViewById(R.id.webview);
-                  progressBar = findViewById(R.id.progress_bar);
-                  loadingText = findViewById(R.id.loading_text);
-                  splashScreen = findViewById(R.id.splash_screen);
+                  RelativeLayout layout = new RelativeLayout(this);
                   
+                  webView = new WebView(this);
+                  RelativeLayout.LayoutParams webParams = new RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.MATCH_PARENT
+                  );
+                  layout.addView(webView, webParams);
+                  
+                  progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                  progressBar.setId(android.view.View.generateViewId());
+                  RelativeLayout.LayoutParams progressParams = new RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      8
+                  );
+                  progressParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+                  progressBar.setMax(100);
+                  layout.addView(progressBar, progressParams);
+                  
+                  setContentView(layout);
                   setupWebView();
                   webView.loadUrl("${{ inputs.website_url }}");
               }
@@ -123,36 +125,18 @@ jobs:
                   settings.setSupportZoom(true);
                   settings.setBuiltInZoomControls(true);
                   settings.setDisplayZoomControls(false);
-                  settings.setAllowFileAccess(true);
-                  settings.setMediaPlaybackRequiresUserGesture(false);
                   
                   webView.setWebViewClient(new WebViewClient() {
                       @Override
                       public void onPageStarted(WebView view, String url, Bitmap favicon) {
                           super.onPageStarted(view, url, favicon);
-                          progressBar.setVisibility(View.VISIBLE);
-                          loadingText.setVisibility(View.VISIBLE);
+                          progressBar.setVisibility(android.view.View.VISIBLE);
                       }
                       
                       @Override
                       public void onPageFinished(WebView view, String url) {
                           super.onPageFinished(view, url);
-                          progressBar.setVisibility(View.GONE);
-                          loadingText.setVisibility(View.GONE);
-                          
-                          if (splashScreen.getVisibility() == View.VISIBLE) {
-                              splashScreen.postDelayed(new Runnable() {
-                                  @Override
-                                  public void run() {
-                                      splashScreen.setVisibility(View.GONE);
-                                  }
-                              }, 300);
-                          }
-                      }
-                      
-                      @Override
-                      public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
-                          handler.proceed();
+                          progressBar.setVisibility(android.view.View.GONE);
                       }
                   });
                   
@@ -161,22 +145,14 @@ jobs:
                       public void onProgressChanged(WebView view, int newProgress) {
                           super.onProgressChanged(view, newProgress);
                           progressBar.setProgress(newProgress);
-                          loadingText.setText("加载中 " + newProgress + "%");
-                          
                           if (newProgress == 100) {
                               progressBar.postDelayed(new Runnable() {
                                   @Override
                                   public void run() {
-                                      progressBar.setVisibility(View.GONE);
-                                      loadingText.setVisibility(View.GONE);
+                                      progressBar.setVisibility(android.view.View.GONE);
                                   }
-                              }, 200);
+                              }, 300);
                           }
-                      }
-                      
-                      @Override
-                      public void onReceivedTitle(WebView view, String title) {
-                          super.onReceivedTitle(view, title);
                       }
                   });
               }
@@ -190,145 +166,33 @@ jobs:
                   return super.onKeyDown(keyCode, event);
               }
           }
-          JAVAEOF
+          EOF
           
-          # 创建布局文件
-          cat > app/src/main/res/layout/activity_main.xml << 'LAYOUTEOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent">
-              
-              <!-- WebView -->
-              <WebView
-                  android:id="@+id/webview"
-                  android:layout_width="match_parent"
-                  android:layout_height="match_parent" />
-              
-              <!-- 进度条容器 -->
-              <LinearLayout
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:orientation="vertical"
-                  android:layout_alignParentTop="true"
-                  android:background="#FFFFFF"
-                  android:elevation="4dp">
-                  
-                  <!-- 进度条 -->
-                  <ProgressBar
-                      android:id="@+id/progress_bar"
-                      style="?android:attr/progressBarStyleHorizontal"
-                      android:layout_width="match_parent"
-                      android:layout_height="3dp"
-                      android:progressTint="#000000"
-                      android:progressBackgroundTint="#E0E0E0"
-                      android:visibility="gone"
-                      android:max="100" />
-                  
-                  <!-- 加载文字 -->
-                  <TextView
-                      android:id="@+id/loading_text"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="加载中 0%"
-                      android:textSize="12sp"
-                      android:textColor="#666666"
-                      android:gravity="center"
-                      android:padding="4dp"
-                      android:visibility="gone" />
-              </LinearLayout>
-              
-              <!-- 启动闪屏 -->
-              <FrameLayout
-                  android:id="@+id/splash_screen"
-                  android:layout_width="match_parent"
-                  android:layout_height="match_parent"
-                  android:background="#FFFFFF"
-                  android:clickable="true">
-                  
-                  <LinearLayout
-                      android:layout_width="wrap_content"
-                      android:layout_height="wrap_content"
-                      android:layout_gravity="center"
-                      android:orientation="vertical"
-                      android:gravity="center">
-                      
-                      <ImageView
-                          android:layout_width="80dp"
-                          android:layout_height="80dp"
-                          android:src="@mipmap/ic_launcher"
-                          android:layout_marginBottom="16dp" />
-                      
-                      <TextView
-                          android:layout_width="wrap_content"
-                          android:layout_height="wrap_content"
-                          android:text="${{ inputs.app_name }}"
-                          android:textSize="24sp"
-                          android:textColor="#000000"
-                          android:textStyle="bold" />
-                      
-                      <ProgressBar
-                          android:layout_width="32dp"
-                          android:layout_height="32dp"
-                          android:layout_marginTop="24dp"
-                          android:indeterminateTint="#000000" />
-                      
-                      <TextView
-                          android:layout_width="wrap_content"
-                          android:layout_height="wrap_content"
-                          android:text="正在加载..."
-                          android:textSize="14sp"
-                          android:textColor="#666666"
-                          android:layout_marginTop="12dp" />
-                  </LinearLayout>
-              </FrameLayout>
-          </RelativeLayout>
-          LAYOUTEOF
-          
-          # 创建图标
-          for size in hdpi mdpi xhdpi xxhdpi xxxhdpi; do
-            convert -size 192x192 xc:#4CAF50 app/src/main/res/mipmap-$size/ic_launcher.png 2>/dev/null || echo "Skip icon"
-          done
-          
-          # 创建 strings.xml
-          cat > app/src/main/res/values/strings.xml << 'XMLEOF'
+          # strings.xml
+          cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">${{ inputs.app_name }}</string>
           </resources>
-          XMLEOF
+          EOF
           
-          # 创建 colors.xml
-          cat > app/src/main/res/values/colors.xml << 'COLORSEOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <color name="colorPrimary">#000000</color>
-              <color name="colorPrimaryDark">#000000</color>
-              <color name="colorAccent">#000000</color>
-          </resources>
-          COLORSEOF
-          
-          # 创建 AndroidManifest.xml
-          cat > app/src/main/AndroidManifest.xml << 'MANIFESTEOF'
+          # AndroidManifest.xml
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="${{ inputs.package_name }}">
               
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
               
               <application
                   android:label="@string/app_name"
-                  android:icon="@mipmap/ic_launcher"
                   android:usesCleartextTraffic="true"
                   android:hardwareAccelerated="true"
                   android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
                   <activity 
                       android:name=".MainActivity"
-                      android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden"
-                      android:windowSoftInputMode="adjustResize">
+                      android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -336,10 +200,10 @@ jobs:
                   </activity>
               </application>
           </manifest>
-          MANIFESTEOF
+          EOF
           
-          # 创建 app/build.gradle
-          cat > app/build.gradle << 'GRADLEEOF'
+          # app/build.gradle
+          cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
           }
@@ -369,7 +233,6 @@ jobs:
                   release {
                       signingConfig signingConfigs.release
                       minifyEnabled false
-                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
               
@@ -378,10 +241,10 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
-          GRADLEEOF
+          EOF
           
-          # 创建根 build.gradle
-          cat > build.gradle << 'ROOTGRADLEEOF'
+          # build.gradle
+          cat > build.gradle << 'EOF'
           buildscript {
               repositories {
                   google()
@@ -398,22 +261,19 @@ jobs:
                   mavenCentral()
               }
           }
+          EOF
           
-          task clean(type: Delete) {
-              delete rootProject.buildDir
-          }
-          ROOTGRADLEEOF
-          
-          cat > settings.gradle << 'SETTINGSEOF'
+          # settings.gradle
+          cat > settings.gradle << 'EOF'
           rootProject.name = "WebViewAPK"
           include ':app'
-          SETTINGSEOF
+          EOF
           
-          cat > gradle.properties << 'PROPSEOF'
+          # gradle.properties
+          cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
-          android.enableJetifier=true
-          PROPSEOF
+          EOF
           
           echo "sdk.dir=$HOME/android-sdk" > local.properties
       
@@ -422,16 +282,16 @@ jobs:
           gradle wrapper --gradle-version 8.2
           chmod +x ./gradlew
       
-      - name: Build Signed APK
+      - name: Build APK
         run: |
-          echo "🔨 构建已签名的 APK..."
-          ./gradlew assembleRelease --stacktrace
-          ls -lh app/build/outputs/apk/release/
+          echo "🔨 构建 APK..."
+          ./gradlew assembleRelease --stacktrace --info
       
       - name: Rename APK
         run: |
           cd app/build/outputs/apk/release
           mv app-release.apk "${{ inputs.app_name }}.apk"
+          ls -lh
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -439,10 +299,3 @@ jobs:
           name: ${{ inputs.app_name }}
           path: app/build/outputs/apk/release/${{ inputs.app_name }}.apk
           retention-days: 7
-      
-      - name: Build Summary
-        run: |
-          echo "✅ 构建完成！"
-          echo "应用名称: ${{ inputs.app_name }}"
-          echo "包名: ${{ inputs.package_name }}"
-          echo "网站: ${{ inputs.website_url }}"
