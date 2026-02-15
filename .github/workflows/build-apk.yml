@@ -6,42 +6,74 @@ on:
       website_url:
         description: '网站URL'
         required: true
+        type: string
       app_name:
         description: '应用名称'
         required: true
+        type: string
       package_name:
         description: '包名'
         required: true
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
       
-      - name: Set Up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
+          # 移除 cache 配置，因为此时还没有 Gradle 文件
+      
+      - name: Setup Android SDK
+        run: |
+          # 下载并安装 Android SDK 命令行工具
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O android-tools.zip
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          unzip -q android-tools.zip -d $HOME/android-sdk/cmdline-tools
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
+          
+          # 设置环境变量
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          
+          # 接受许可协议
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          
+          # 安装必要的 Android SDK 包
+          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
       
       - name: Create Android Project
         run: |
-          # 创建基础 Android 项目结构
-          mkdir -p app/src/main/java/com/webviewapk
+          echo "🚀 创建 Android 项目..."
+          echo "网站: ${{ inputs.website_url }}"
+          echo "应用名: ${{ inputs.app_name }}"
+          echo "包名: ${{ inputs.package_name }}"
+          
+          # 将包名转换为目录路径
+          PACKAGE_PATH=$(echo "${{ inputs.package_name }}" | tr '.' '/')
+          
+          # 创建目录结构
+          mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/layout
           
           # 创建 MainActivity.java
-          cat > app/src/main/java/com/webviewapk/MainActivity.java << 'EOF'
-          package com.webviewapk;
+          cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'JAVAEOF'
+          package ${{ inputs.package_name }};
           
           import android.app.Activity;
           import android.os.Bundle;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.webkit.WebSettings;
           
           public class MainActivity extends Activity {
               @Override
@@ -49,31 +81,38 @@ jobs:
                   super.onCreate(savedInstanceState);
                   WebView webView = new WebView(this);
                   webView.setWebViewClient(new WebViewClient());
-                  webView.getSettings().setJavaScriptEnabled(true);
-                  webView.loadUrl("${{ github.event.inputs.website_url }}");
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  webView.loadUrl("${{ inputs.website_url }}");
                   setContentView(webView);
               }
           }
-          EOF
+          JAVAEOF
           
           # 创建 strings.xml
-          cat > app/src/main/res/values/strings.xml << 'EOF'
+          cat > app/src/main/res/values/strings.xml << 'XMLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
           <resources>
-              <string name="app_name">${{ github.event.inputs.app_name }}</string>
+              <string name="app_name">${{ inputs.app_name }}</string>
           </resources>
-          EOF
+          XMLEOF
           
           # 创建 AndroidManifest.xml
-          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          cat > app/src/main/AndroidManifest.xml << 'MANIFESTEOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="${{ github.event.inputs.package_name }}">
+              package="${{ inputs.package_name }}">
               
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               
               <application
-                  android:label="@string/app_name">
-                  <activity android:name=".MainActivity"
+                  android:label="@string/app_name"
+                  android:usesCleartextTraffic="true">
+                  <activity 
+                      android:name=".MainActivity"
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -82,19 +121,20 @@ jobs:
                   </activity>
               </application>
           </manifest>
-          EOF
+          MANIFESTEOF
           
-          # 创建 build.gradle (app)
-          cat > app/build.gradle << 'EOF'
+          # 创建 app/build.gradle
+          cat > app/build.gradle << 'GRADLEEOF'
           plugins {
               id 'com.android.application'
           }
           
           android {
+              namespace '${{ inputs.package_name }}'
               compileSdk 34
               
               defaultConfig {
-                  applicationId "${{ github.event.inputs.package_name }}"
+                  applicationId "${{ inputs.package_name }}"
                   minSdk 21
                   targetSdk 34
                   versionCode 1
@@ -106,49 +146,78 @@ jobs:
                       minifyEnabled false
                   }
               }
+              
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
           }
-          EOF
+          GRADLEEOF
           
-          # 创建 build.gradle (root)
-          cat > build.gradle << 'EOF'
-          plugins {
-              id 'com.android.application' version '8.1.0' apply false
+          # 创建根 build.gradle
+          cat > build.gradle << 'ROOTGRADLEEOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
           }
-          EOF
+          
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          
+          task clean(type: Delete) {
+              delete rootProject.buildDir
+          }
+          ROOTGRADLEEOF
           
           # 创建 settings.gradle
-          cat > settings.gradle << 'EOF'
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          
+          cat > settings.gradle << 'SETTINGSEOF'
           rootProject.name = "WebViewAPK"
           include ':app'
-          EOF
+          SETTINGSEOF
+          
+          # 创建 gradle.properties
+          cat > gradle.properties << 'PROPSEOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=true
+          PROPSEOF
+          
+          # 创建 local.properties
+          echo "sdk.dir=$HOME/android-sdk" > local.properties
+          
+          echo "✅ 项目结构创建完成"
+          ls -la
       
-      - name: Grant execute permission for gradlew
+      - name: Create Gradle Wrapper
         run: |
-          # 创建 gradlew wrapper
-          gradle wrapper
+          gradle wrapper --gradle-version 8.2
           chmod +x ./gradlew
       
       - name: Build APK
-        run: ./gradlew assembleRelease
+        run: |
+          echo "🔨 开始构建 APK..."
+          ./gradlew assembleRelease --stacktrace
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.app_name }}-release
+          name: ${{ inputs.app_name }}-apk
           path: app/build/outputs/apk/release/*.apk
+          retention-days: 7
+      
+      - name: Build Success
+        run: |
+          echo "✅ 构建完成！"
+          echo "应用名称: ${{ inputs.app_name }}"
+          echo "包名: ${{ inputs.package_name }}"
+          echo "网站: ${{ inputs.website_url }}"
+          ls -lh app/build/outputs/apk/release/
