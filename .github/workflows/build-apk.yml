@@ -102,29 +102,53 @@ jobs:
           mkdir -p app/src/main/java/$PACKAGE_PATH
           mkdir -p app/src/main/res/values
           
-          # MainActivity
+          # MainActivity - 完整增强版（纯原生 API）
           cat > app/src/main/java/$PACKAGE_PATH/MainActivity.java << 'EOF'
           package ${{ inputs.package_name }};
           
           import android.app.Activity;
+          import android.app.DownloadManager;
+          import android.content.Context;
+          import android.graphics.Bitmap;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
           import android.os.Bundle;
+          import android.os.Environment;
+          import android.view.KeyEvent;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowManager;
+          import android.webkit.CookieManager;
+          import android.webkit.DownloadListener;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
-          import android.webkit.WebSettings;
-          import android.webkit.WebChromeClient;
-          import android.view.KeyEvent;
           import android.widget.ProgressBar;
           import android.widget.RelativeLayout;
-          import android.graphics.Bitmap;
-          import android.view.View;
+          import android.widget.Toast;
           
           public class MainActivity extends Activity {
               private WebView webView;
               private ProgressBar progressBar;
+              private float startY;
+              private boolean isPulling = false;
               
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  
+                  // 启用全屏沉浸式模式
+                  setupFullscreen();
+                  
+                  // 启用 Cookie 持久化
+                  CookieManager cookieManager = CookieManager.getInstance();
+                  cookieManager.setAcceptCookie(true);
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      cookieManager.setAcceptThirdPartyCookies(null, true);
+                  }
                   
                   RelativeLayout layout = new RelativeLayout(this);
                   
@@ -146,7 +170,36 @@ jobs:
                   
                   setContentView(layout);
                   setupWebView();
+                  setupDownload();
+                  setupPullToRefresh();
+                  
                   webView.loadUrl("${{ inputs.website_url }}");
+              }
+              
+              private void setupFullscreen() {
+                  requestWindowFeature(Window.FEATURE_NO_TITLE);
+                  getWindow().setFlags(
+                      WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                      WindowManager.LayoutParams.FLAG_FULLSCREEN
+                  );
+                  
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                      );
+                  }
+                  
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      Window window = getWindow();
+                      window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                      window.setStatusBarColor(Color.BLACK);
+                      window.setNavigationBarColor(Color.BLACK);
+                  }
               }
               
               private void setupWebView() {
@@ -161,6 +214,10 @@ jobs:
                   settings.setSupportZoom(true);
                   settings.setBuiltInZoomControls(true);
                   settings.setDisplayZoomControls(false);
+                  settings.setAllowFileAccess(true);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+                  settings.setAppCacheEnabled(true);
+                  settings.setAppCachePath(getCacheDir().getAbsolutePath());
                   
                   webView.setWebViewClient(new WebViewClient() {
                       @Override
@@ -173,6 +230,44 @@ jobs:
                       public void onPageFinished(WebView view, String url) {
                           super.onPageFinished(view, url);
                           progressBar.setVisibility(View.GONE);
+                          
+                          // 读取网页 theme-color 并设置状态栏颜色
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                              view.evaluateJavascript(
+                                  "(function() { " +
+                                  "  var meta = document.querySelector('meta[name=\"theme-color\"]'); " +
+                                  "  return meta ? meta.content : null; " +
+                                  "})();",
+                                  value -> {
+                                      if (value != null && !value.equals("null") && !value.equals("\"null\"")) {
+                                          try {
+                                              String colorStr = value.replace("\"", "");
+                                              int color = Color.parseColor(colorStr);
+                                              getWindow().setStatusBarColor(color);
+                                              getWindow().setNavigationBarColor(color);
+                                              
+                                              // 根据颜色亮度调整状态栏图标颜色
+                                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                                  View decorView = getWindow().getDecorView();
+                                                  int flags = decorView.getSystemUiVisibility();
+                                                  
+                                                  if (isColorDark(color)) {
+                                                      // 深色背景，使用浅色图标
+                                                      flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                                                  } else {
+                                                      // 浅色背景，使用深色图标
+                                                      flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                                                  }
+                                                  
+                                                  decorView.setSystemUiVisibility(flags);
+                                              }
+                                          } catch (Exception e) {
+                                              e.printStackTrace();
+                                          }
+                                      }
+                                  }
+                              );
+                          }
                       }
                   });
                   
@@ -193,6 +288,85 @@ jobs:
                   });
               }
               
+              private void setupPullToRefresh() {
+                  webView.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent event) {
+                          switch (event.getAction()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  startY = event.getY();
+                                  isPulling = false;
+                                  break;
+                              
+                              case MotionEvent.ACTION_MOVE:
+                                  if (webView.getScrollY() == 0 && !isPulling) {
+                                      float currentY = event.getY();
+                                      float diff = currentY - startY;
+                                      
+                                      if (diff > 150) {
+                                          isPulling = true;
+                                          Toast.makeText(MainActivity.this, "刷新中...", Toast.LENGTH_SHORT).show();
+                                          webView.reload();
+                                      }
+                                  }
+                                  break;
+                              
+                              case MotionEvent.ACTION_UP:
+                              case MotionEvent.ACTION_CANCEL:
+                                  isPulling = false;
+                                  break;
+                          }
+                          return false;
+                      }
+                  });
+              }
+              
+              private void setupDownload() {
+                  webView.setDownloadListener(new DownloadListener() {
+                      @Override
+                      public void onDownloadStart(String url, String userAgent, 
+                                                   String contentDisposition, String mimeType, 
+                                                   long contentLength) {
+                          try {
+                              DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                              request.setMimeType(mimeType);
+                              
+                              String filename = url.substring(url.lastIndexOf("/") + 1);
+                              if (filename.isEmpty() || !filename.contains(".")) {
+                                  filename = "download_" + System.currentTimeMillis();
+                              }
+                              
+                              request.setTitle(filename);
+                              request.setDescription("正在下载文件...");
+                              request.allowScanningByMediaScanner();
+                              request.setNotificationVisibility(
+                                  DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                              );
+                              request.setDestinationInExternalPublicDir(
+                                  Environment.DIRECTORY_DOWNLOADS, filename
+                              );
+                              
+                              DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                              if (dm != null) {
+                                  dm.enqueue(request);
+                                  Toast.makeText(MainActivity.this, 
+                                      "开始下载：" + filename, Toast.LENGTH_SHORT).show();
+                              }
+                          } catch (Exception e) {
+                              Toast.makeText(MainActivity.this, 
+                                  "下载失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+                          }
+                      }
+                  });
+              }
+              
+              private boolean isColorDark(int color) {
+                  double darkness = 1 - (0.299 * Color.red(color) + 
+                                        0.587 * Color.green(color) + 
+                                        0.114 * Color.blue(color)) / 255;
+                  return darkness >= 0.5;
+              }
+              
               @Override
               public boolean onKeyDown(int keyCode, KeyEvent event) {
                   if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
@@ -200,6 +374,29 @@ jobs:
                       return true;
                   }
                   return super.onKeyDown(keyCode, event);
+              }
+              
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  webView.onPause();
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      CookieManager.getInstance().flush();
+                  }
+              }
+              
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  webView.onResume();
+              }
+              
+              @Override
+              protected void onDestroy() {
+                  super.onDestroy();
+                  if (webView != null) {
+                      webView.destroy();
+                  }
               }
           }
           EOF
@@ -222,16 +419,22 @@ jobs:
               
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" 
+                               android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" 
+                               android:maxSdkVersion="32" />
               
               <application
                   android:label="@string/app_name"
                   android:icon="@mipmap/ic_launcher"
                   android:usesCleartextTraffic="true"
                   android:hardwareAccelerated="true"
+                  android:requestLegacyExternalStorage="true"
                   android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
                   <activity 
                       android:name=".MainActivity"
-                      android:exported="true">
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -241,7 +444,7 @@ jobs:
           </manifest>
           EOF
           
-          # app/build.gradle - 添加签名配置
+          # app/build.gradle
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -282,7 +485,6 @@ jobs:
           }
           EOF
           
-          # build.gradle
           cat > build.gradle << 'EOF'
           buildscript {
               repositories {
@@ -302,13 +504,11 @@ jobs:
           }
           EOF
           
-          # settings.gradle
           cat > settings.gradle << 'EOF'
           rootProject.name = "WebViewAPK"
           include ':app'
           EOF
           
-          # gradle.properties
           cat > gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
@@ -336,3 +536,16 @@ jobs:
           name: ${{ inputs.app_name }}-v${{ inputs.version_name }}
           path: app/build/outputs/apk/release/${{ inputs.app_name }}-v${{ inputs.version_name }}.apk
           retention-days: 7
+      
+      - name: Build Summary
+        run: |
+          echo "✅ 构建完成！"
+          echo "📦 完整增强版功能："
+          echo "  - 顶部进度条"
+          echo "  - Cookie 持久化"
+          echo "  - 文件下载支持"
+          echo "  - 手势下拉刷新"
+          echo "  - 状态栏自适应颜色"
+          echo "  - 沉浸式全屏模式"
+          echo "  - 返回键导航"
+          echo "  - 自定义图标和版本号"
